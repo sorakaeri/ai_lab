@@ -120,20 +120,6 @@ val_ds = make_dataset(val_paths, val_labels)
 # 테스트 데이터셋 생성
 test_ds = make_dataset(test_paths, test_labels)
 
-
-
-
-# 샘플 이미지를 출력 (필요없으면 주석 처리)
-plt.figure(figsize=(10, 10))
-for images, labels_batch in train_ds.take(1):
-    for i in range(9):
-        plt.subplot(3, 3, i + 1)
-        plt.imshow(images[i].numpy().astype("uint8"))
-        plt.title(class_names[labels_batch[i]])
-        plt.axis("off")
-plt.show()
-
-
 # Model
 model = tf.keras.Sequential(name='SingleLayerPerceptron')
 
@@ -148,7 +134,7 @@ model.add(layers.Dense(units=num_classes,activation='softmax',name='Output'))
 
 # 모델 학습 방식
 model.compile(
-    optimizer = "adam", 
+    # optimizer = "adam", 
     loss='sparse_categorical_crossentropy',
     metrics=['accuracy']
 )
