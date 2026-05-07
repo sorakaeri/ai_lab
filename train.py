@@ -58,10 +58,6 @@ image_paths = np.array(image_paths)
 # 라벨 리스트를 numpy 배열로 변환
 labels = np.array(labels)
 
-
-
-
-
 # Train 
 train_paths, temp_paths, train_labels, temp_labels = train_test_split(
     image_paths,                         
@@ -88,13 +84,13 @@ print("Validation:", len(val_paths))
 # 테스트 데이터 개수 출력
 print("Test:", len(test_paths))
 
-
-
 # 이미지 경로와 라벨을 받아 실제 이미지 tensor로 변환
 def load_image(path, label):
     image = tf.io.read_file(path)
     image = tf.image.decode_jpeg(image, channels=3)
     image = tf.image.resize(image, IMG_SIZE)
+    # 추가된 부분: 픽셀 값을 0~255에서 0~1 사이의 실수로 변환
+    image = tf.cast(image, tf.float32) / 255.0 
     return image, label
 
 
@@ -120,40 +116,54 @@ val_ds = make_dataset(val_paths, val_labels)
 # 테스트 데이터셋 생성
 test_ds = make_dataset(test_paths, test_labels)
 
-
-
-
-# 샘플 이미지를 출력 (필요없으면 주석 처리)
-plt.figure(figsize=(10, 10))
-for images, labels_batch in train_ds.take(1):
-    for i in range(9):
-        plt.subplot(3, 3, i + 1)
-        plt.imshow(images[i].numpy().astype("uint8"))
-        plt.title(class_names[labels_batch[i]])
-        plt.axis("off")
-plt.show()
-
-
-# Model
-model = tf.keras.Sequential(name='SingleLayerPerceptron')
+# Model - SingleLayer -> MultiLayer
+model = tf.keras.Sequential(name='CNN_Model')
 
 # 입력층
 model.add(layers.Input(shape=(IMG_HEIGHT, IMG_WIDTH, 3)))
 
+# 1. 첫 번째 합성곱(Conv) 블록
+# 32개의 필터(돋보기)를 사용해 이미지의 얕은 특징(선, 색 등)을 추출
+model.add(layers.Conv2D(32, (3, 3), activation='relu', padding='same', name='Conv1'))
+# 특징을 추출한 후 크기를 반으로 줄여 핵심 정보만 남김 (연산량 감소 효과)
+model.add(layers.MaxPooling2D((2, 2), name='Pool1'))
+
+# 2. 두 번째 합성곱(Conv) 블록
+# 64개의 필터로 늘려 질감 등 조금 더 복잡한 특징을 추출
+model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same', name='Conv2'))
+model.add(layers.MaxPooling2D((2, 2), name='Pool2'))
+
+# 3. 세 번째 합성곱(Conv) 블록
+# 128개의 필터로 전체적인 형태(귀 모양, 눈 위치 등)를 추출
+model.add(layers.Conv2D(128, (3, 3), activation='relu', padding='same', name='Conv3'))
+model.add(layers.MaxPooling2D((2, 2), name='Pool3'))
+
+# --- 여기까지가 이미지의 '특징'을 뽑아내는 과정입니다. ---
+
+# 4. 추출된 2차원 특징들을 1차원으로 길게 펼침
 model.add(layers.Flatten())
 
-# 출력층
-model.add(layers.Dense(units=num_classes,activation='softmax',name='Output'))
+# 5. 분류를 위한 은닉층 (Dense)
+model.add(layers.Dense(128, activation='relu', name='Hidden1'))
 
+# ★ 중요: Dropout 추가 (과적합 방지)
+# CNN은 학습력이 너무 좋아서 훈련 데이터만 달달 외워버리는(과적합) 문제가 쉽게 발생합니다.
+# 노드의 50%를 무작위로 꺼서(Dropout) 모델이 특정 패턴에만 의존하지 않게 만듭니다.
+model.add(layers.Dropout(0.5))
 
-# 모델 학습 방식
+# 6. 최종 출력층 (7개의 클래스 확률 계산)
+model.add(layers.Dense(units=num_classes, activation='softmax', name='Output'))
+
+# ---------------------------------------------------------
+# 모델 컴파일 (Adam 최적화 도구 사용)
+# ---------------------------------------------------------
 model.compile(
-    optimizer = "adam", 
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), 
     loss='sparse_categorical_crossentropy',
     metrics=['accuracy']
 )
 
-# 모델 구조 출력
+# 모델 구조 출력 (파라미터 수 확인용)
 model.summary()
 
 
