@@ -58,10 +58,6 @@ image_paths = np.array(image_paths)
 # 라벨 리스트를 numpy 배열로 변환
 labels = np.array(labels)
 
-
-
-
-
 # Train 
 train_paths, temp_paths, train_labels, temp_labels = train_test_split(
     image_paths,                         
@@ -88,13 +84,13 @@ print("Validation:", len(val_paths))
 # 테스트 데이터 개수 출력
 print("Test:", len(test_paths))
 
-
-
 # 이미지 경로와 라벨을 받아 실제 이미지 tensor로 변환
 def load_image(path, label):
     image = tf.io.read_file(path)
     image = tf.image.decode_jpeg(image, channels=3)
     image = tf.image.resize(image, IMG_SIZE)
+    # 추가된 부분: 픽셀 값을 0~255에서 0~1 사이의 실수로 변환
+    image = tf.cast(image, tf.float32) / 255.0 
     return image, label
 
 
@@ -120,26 +116,67 @@ val_ds = make_dataset(val_paths, val_labels)
 # 테스트 데이터셋 생성
 test_ds = make_dataset(test_paths, test_labels)
 
-# Model
-model = tf.keras.Sequential(name='SingleLayerPerceptron')
+# ---------------------------------------------------------
+# [성능 돌파] 1. 사전 학습된 베이스 모델 로드 (MobileNetV2)
+# ---------------------------------------------------------
+# ImageNet 데이터(1000개 클래스, 수백만 장)로 미리 학습된 가중치를 가져옵니다.
+# include_top=False: 기존의 1000개 분류기를 버리고 특징 추출하는 '눈'만 가져옵니다.
+base_model = tf.keras.applications.MobileNetV2(
+    input_shape=(IMG_HEIGHT, IMG_WIDTH, 3),
+    include_top=False,
+    weights='imagenet'
+)
 
-# 입력층
+# 기존의 똑똑한 지식이 망가지지 않도록 뇌를 얼려버립니다(동결).
+base_model.trainable = False
+
+# ---------------------------------------------------------
+# 2. 데이터 증강 (가벼운 좌우 반전 및 회전 유지)
+# ---------------------------------------------------------
+data_augmentation = tf.keras.Sequential([
+    layers.RandomFlip("horizontal"),
+    layers.RandomRotation(0.1),
+    layers.RandomZoom(0.1),
+], name="Data_Augmentation")
+
+# ---------------------------------------------------------
+# 3. 새로운 모델 조립
+# ---------------------------------------------------------
+model = tf.keras.Sequential(name='Transfer_Learning_Model')
+
 model.add(layers.Input(shape=(IMG_HEIGHT, IMG_WIDTH, 3)))
+model.add(data_augmentation)
 
-model.add(layers.Flatten())
+# 이미 load_image에서 [0, 1]로 정규화된 값을 MobileNetV2에 맞게 [-1, 1]로 변환
+model.add(layers.Rescaling(scale=2.0, offset=-1.0))
 
-# 출력층
-model.add(layers.Dense(units=num_classes,activation='softmax',name='Output'))
+# 가져온 구글의 베이스 모델 탑재
+model.add(base_model)
 
+# 2차원 특징맵을 1차원으로 압축 (Flatten보다 효율적인 GlobalAveragePooling 사용)
+model.add(layers.GlobalAveragePooling2D())
 
-# 모델 학습 방식
+# 우리 과제에 맞게 분류하는 머리(Head) 달기
+model.add(layers.Dense(256, activation='relu'))
+model.add(layers.Dropout(0.5)) # 과적합 방지
+model.add(layers.Dense(units=num_classes, activation='softmax', name='Output'))
+
+# ---------------------------------------------------------
+# 4. 모델 컴파일
+# ---------------------------------------------------------
+# 사전 학습 모델을 사용할 때는 학습률을 약간 낮춰서 부드럽게 학습하는 것이 좋습니다.
+advanced_optimizer = tf.keras.optimizers.AdamW(
+    learning_rate=0.0005,  # 0.001에서 0.0005로 하향
+    weight_decay=0.004
+)
+
 model.compile(
-    # optimizer = "adam", 
+    optimizer=advanced_optimizer,
     loss='sparse_categorical_crossentropy',
     metrics=['accuracy']
 )
 
-# 모델 구조 출력
+# 구조 출력: Trainable params가 확 줄어든 것을 확인할 수 있습니다.
 model.summary()
 
 
