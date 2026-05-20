@@ -1,7 +1,6 @@
 import os
 import tensorflow as tf
-from tensorflow.keras import layers
-from tensorflow.keras.optimizers import Adam # [개선 포인트] Adam 옵티마이저 명시적 호출
+from tensorflow.keras import layers, callbacks
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -9,27 +8,25 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.model_selection import train_test_split
 
 # ==========================================
-# 1. 환경 설정 및 데이터 준비 (기존과 동일)
+# 1. Config 및 데이터 로드
 # ==========================================
 BASE_DIR = "./dataset"  # 데이터셋 폴더 경로
 
-IMG_HEIGHT = 96 # 입력 이미지 높이
-IMG_WIDTH = 96  # 입력 이미지 너비
+IMG_HEIGHT = 96
+IMG_WIDTH = 96
 IMG_SIZE = (IMG_HEIGHT, IMG_WIDTH)
 
-SEED = 123  # 랜덤 시드값
-
-BATCH_SIZE = 32 # 한 번에 학습할 이미지 개수
-EPOCHS = 20 # 전체 학습 반복 횟수
-TRAIN_RATIO = 0.7   # 학습 데이터 비율
-VAL_RATIO = 0.15    # 검증 데이터 비율
-TEST_RATIO = 0.15   # 테스트 데이터 비율
+SEED = 123
+BATCH_SIZE = 32
+EPOCHS = 20 
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.15
+TEST_RATIO = 0.15
 
 class_names = sorted([
     name for name in os.listdir(BASE_DIR)
     if os.path.isdir(os.path.join(BASE_DIR, name))
 ])
-
 num_classes = len(class_names)
 print("Class Names:", class_names)
 print("Num Classes:", num_classes)
@@ -48,33 +45,26 @@ for label, class_name in enumerate(class_names):
 image_paths = np.array(image_paths)
 labels = np.array(labels)
 
-# Train Split
+# Train 분리
 train_paths, temp_paths, train_labels, temp_labels = train_test_split(
-    image_paths,                                        
-    labels,                                              
-    test_size=(VAL_RATIO + TEST_RATIO),  
-    random_state=SEED,
-    stratify=labels
+    image_paths, labels, test_size=(VAL_RATIO + TEST_RATIO), 
+    random_state=SEED, stratify=labels
 )
 
-# Validation + Test Split
+# Validation / Test 분리
 val_paths, test_paths, val_labels, test_labels = train_test_split(
-    temp_paths,
-    temp_labels,
-    test_size=TEST_RATIO / (VAL_RATIO + TEST_RATIO),
-    random_state=SEED,
-    stratify=temp_labels
+    temp_paths, temp_labels, test_size=TEST_RATIO / (VAL_RATIO + TEST_RATIO),
+    random_state=SEED, stratify=temp_labels
 )
 
-# ==========================================
-# 2. 데이터셋 파이프라인 (정규화 추가)
-# ==========================================
+print("Train:", len(train_paths))
+print("Validation:", len(val_paths))
+print("Test:", len(test_paths))
+
 def load_image(path, label):
     image = tf.io.read_file(path)
     image = tf.image.decode_jpeg(image, channels=3)
     image = tf.image.resize(image, IMG_SIZE)
-    # [개선 포인트 1] 픽셀 값을 0 ~ 1 사이로 정규화 (Normalization)
-    image = image / 255.0  
     return image, label
 
 def make_dataset(paths, labels, shuffle=False):
@@ -91,55 +81,98 @@ val_ds = make_dataset(val_paths, val_labels)
 test_ds = make_dataset(test_paths, test_labels)
 
 # ==========================================
-# 3. 모델 구성 (CNN + 활성화 함수 + Dropout 적용)
+# 2. VGG-Style 심층 CNN 모델
 # ==========================================
-# [개선 포인트 3] 단층 퍼셉트론 대신 합성곱 신경망(CNN) 아키텍처 도입
-model = tf.keras.Sequential(name='CNN_Classifier')
+model = tf.keras.Sequential(name='CNN_VGG_Style_AdamW')
 
-# 1) 입력층
 model.add(layers.Input(shape=(IMG_HEIGHT, IMG_WIDTH, 3)))
+ 
+# [개선] 노이즈를 줄이기 위해 가장 안정적인 좌우반전만 적용
+model.add(layers.RandomFlip("horizontal"))
+model.add(layers.Rescaling(1./255, name='Normalization'))
 
-# 2) 특징 추출기 (Feature Extractor) - 공간 정보 유지
-model.add(layers.Conv2D(32, (3, 3), activation='relu', padding='same'))
-model.add(layers.MaxPooling2D(pool_size=(2, 2)))
+# Block 1 (연속된 Conv 레이어로 미세 특징 추출)
+model.add(layers.Conv2D(32, (3, 3), padding='same', kernel_initializer='he_normal'))
+model.add(layers.BatchNormalization())
+model.add(layers.Activation('relu'))
+model.add(layers.Conv2D(32, (3, 3), padding='same', kernel_initializer='he_normal'))
+model.add(layers.BatchNormalization())
+model.add(layers.Activation('relu'))
+model.add(layers.MaxPooling2D((2, 2)))
+model.add(layers.Dropout(0.2)) # 약한 드롭아웃
 
-model.add(layers.Conv2D(64, (3, 3), activation='relu', padding='same'))
-model.add(layers.MaxPooling2D(pool_size=(2, 2)))
+# Block 2
+model.add(layers.Conv2D(64, (3, 3), padding='same', kernel_initializer='he_normal'))
+model.add(layers.BatchNormalization())
+model.add(layers.Activation('relu'))
+model.add(layers.Conv2D(64, (3, 3), padding='same', kernel_initializer='he_normal'))
+model.add(layers.BatchNormalization())
+model.add(layers.Activation('relu'))
+model.add(layers.MaxPooling2D((2, 2)))
+model.add(layers.Dropout(0.3)) # 드롭아웃 점진적 증가
 
-model.add(layers.Conv2D(128, (3, 3), activation='relu', padding='same'))
-model.add(layers.MaxPooling2D(pool_size=(2, 2)))
+# Block 3
+model.add(layers.Conv2D(128, (3, 3), padding='same', kernel_initializer='he_normal'))
+model.add(layers.BatchNormalization())
+model.add(layers.Activation('relu'))
+model.add(layers.MaxPooling2D((2, 2)))
+model.add(layers.Dropout(0.4)) # 드롭아웃 점진적 증가
 
-# 3) 분류기 (Classifier)
-model.add(layers.Flatten())
-model.add(layers.Dense(128, activation='relu'))
-# [개선 포인트 4] Dropout을 추가하여 과적합(Overfitting) 방지
-model.add(layers.Dropout(0.5)) 
-# 출력층
+# Fully Connected Layer
+model.add(layers.Flatten()) # GAP 대신 Flatten 복구
+model.add(layers.Dense(256, kernel_initializer='he_normal'))
+model.add(layers.BatchNormalization())
+model.add(layers.Activation('relu'))
+model.add(layers.Dropout(0.5)) # 강한 드롭아웃
+
+# Output
 model.add(layers.Dense(units=num_classes, activation='softmax', name='Output'))
 
-model.summary()
-
-# ==========================================
-# 4. 모델 컴파일 및 학습 (Optimizer & Learning Rate 적용)
-# ==========================================
-# [개선 포인트 5] 기본값 대신 Adam 옵티마이저 사용 및 학습률(0.001) 명시
-custom_optimizer = Adam(learning_rate=0.001)
+# [개선] AdamW 최적화 도구 사용 (weight_decay로 과적합 방지 효과 탁월)
+# TensorFlow 2.11 이상에서 사용 가능하며, 구버전의 경우 Adam으로 자동 폴백되거나 
+# tfa.optimizers.AdamW를 써야 할 수 있습니다. (최신 버전에선 내장)
+try:
+    optimizer = tf.keras.optimizers.AdamW(learning_rate=0.001, weight_decay=1e-4)
+except AttributeError:
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
 model.compile(
-    optimizer=custom_optimizer, 
+    optimizer=optimizer,
     loss='sparse_categorical_crossentropy',
     metrics=['accuracy']
 )
 
+model.summary()
+
+# ==========================================
+# 3. 콜백(Callbacks) 설정 및 학습
+# ==========================================
+lr_scheduler = callbacks.ReduceLROnPlateau(
+    monitor='val_loss', 
+    factor=0.3, # 학습률을 너무 급격히 깎지 않도록 수정
+    patience=4,  
+    min_lr=1e-6, 
+    verbose=1
+)
+
+early_stopping = callbacks.EarlyStopping(
+    monitor='val_loss', 
+    patience=10, 
+    restore_best_weights=True, 
+    verbose=1
+)
+
+# 모델 학습
 history = model.fit(
     train_ds,               
     validation_data=val_ds, 
     epochs=EPOCHS,          
-    verbose=2               
+    verbose=2,
+    callbacks=[lr_scheduler, early_stopping]
 )
 
 # ==========================================
-# 5. 성능 평가 및 시각화 (기존과 동일)
+# 4. 성능 평가 및 시각화
 # ==========================================
 val_loss, val_acc = model.evaluate(val_ds, verbose=0)
 print(f"\nValidation Accuracy: {val_acc * 100:.2f}%")
@@ -164,20 +197,13 @@ print(classification_report(y_true, y_pred, target_names=class_names))
 cm = confusion_matrix(y_true, y_pred)
 
 plt.figure(figsize=(8, 6))
-sns.heatmap(
-    cm,
-    annot=True,
-    fmt='d',
-    cmap='Blues',
-    xticklabels=class_names,
-    yticklabels=class_names
-)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=class_names, yticklabels=class_names)
 plt.title("Confusion Matrix")
 plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.show()
 
-# 학습 과정 시각화
 epochs_range = range(1, len(history.history['accuracy']) + 1)
 
 plt.figure(figsize=(14, 5))
